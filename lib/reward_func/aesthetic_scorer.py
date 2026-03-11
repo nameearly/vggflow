@@ -38,11 +38,11 @@ class AestheticScorer(torch.nn.Module):
         super().__init__()
         if distributed:
             if get_local_rank() == 0: # only download once
-                self.clip = CLIPModel.from_pretrained("openai/clip-vit-large-patch14", cache_dir='/is/cluster/fast/wliu/zliu/huaggingface_cache')
-                self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14", cache_dir='/is/cluster/fast/wliu/zliu/huaggingface_cache')
+                self.clip = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+                self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
             dist.barrier()
-        self.clip = CLIPModel.from_pretrained("openai/clip-vit-large-patch14", cache_dir='/is/cluster/fast/wliu/zliu/huaggingface_cache')
-        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14", cache_dir='/is/cluster/fast/wliu/zliu/huaggingface_cache')
+        self.clip = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
 
         self.mlp = MLP()
         state_dict = torch.load(
@@ -60,11 +60,7 @@ class AestheticScorer(torch.nn.Module):
     def __call__(self, images):
         device = next(self.parameters()).device
 
-        # original:
-        # inputs = self.processor(images=images, return_tensors="pt") # unit8 (bs, 3, ..., ...) to float  (bs, 3, 224, 224)
-        # inputs = {k: v.to(self.dtype).to(device) for k, v in inputs.items()}
-
-        # now: images should be in [0, 1]
+        # images should be in [0, 1]
         images = torch.nn.functional.interpolate(images, size=(224, 224), mode="bicubic")
         images = (images - self.OPENAI_CLIP_MEAN.to(device)) / self.OPENAI_CLIP_STD.to(device)
         inputs = {"pixel_values": images}

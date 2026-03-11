@@ -26,15 +26,11 @@ use_prompt = {
 
 def aesthetic_score(dtype=torch.float32, device="cuda", distributed=True):
     from lib.reward_func.aesthetic_scorer import AestheticScorer
-    # why cuda() doesn't cause a bug?
-    scorer = AestheticScorer(dtype=torch.float32, distributed=distributed).cuda() # ignore type;
+    scorer = AestheticScorer(dtype=torch.float32, distributed=distributed).cuda()
 
-    # input can be 3*256*256 or 3*1024*1024
-    # @torch.no_grad() # original AestheticScorer already has no_grad()
     def _fn(images, prompts, metadata):
         if isinstance(images, torch.Tensor):
-            # images = (images * 255).round().clamp(0, 255).to(torch.uint8)
-            pass # assume float tensor in [0, 1]
+            pass  # assume float tensor in [0, 1]
         else:
             images = images.transpose(0, 3, 1, 2)  # NHWC -> NCHW
             images = torch.tensor(images, dtype=torch.uint8)
@@ -44,17 +40,15 @@ def aesthetic_score(dtype=torch.float32, device="cuda", distributed=True):
     return _fn
 
 # For ImageReward
-import ImageReward as RM
-from PIL import Image
-from torchvision.transforms import Compose, Resize, CenterCrop, Normalize
-try:
-    from torchvision.transforms import InterpolationMode
-    BICUBIC = InterpolationMode.BICUBIC
-except ImportError:
-    BICUBIC = Image.BICUBIC
-
 def imagereward(dtype=torch.float32, device="cuda"):
-    # aesthetic = RM.load_score("Aesthetic", device=device)
+    import ImageReward as RM
+    from torchvision.transforms import Compose, Resize, CenterCrop, Normalize
+    try:
+        from torchvision.transforms import InterpolationMode
+        BICUBIC = InterpolationMode.BICUBIC
+    except ImportError:
+        BICUBIC = Image.BICUBIC
+
     if get_local_rank() == 0:  # only download once
         reward_model = RM.load("ImageReward-v1.0")
     dist.barrier()
@@ -97,7 +91,6 @@ def hpscore(dtype=torch.float32, device=torch.device('cuda')):
             'ViT-H-14',
             'laion2B-s32B-b79K',
             precision='amp',
-            # device=device,
             jit=False,
             force_quick_gelu=False,
             force_custom_text=False,
@@ -126,15 +119,10 @@ def hpscore(dtype=torch.float32, device=torch.device('cuda')):
     def _fn(images, prompts, metadata):
         image_size = model.visual.image_size[0]
         transforms = Compose([
-            ResizeMaxSize(image_size, fill=0), # resize to 224x224
+            ResizeMaxSize(image_size, fill=0),
             MaskAwareNormalize(mean=model.visual.image_mean, std=model.visual.image_std),
         ])
 
-        # these are not numerically identical, because
-        # F.to_tensor(F.to_pil_image(img)) != img
-        # due to RGB round up (in PIL it is 0~255 integer)
-
-        # images = torch.stack([preprocess_val(F.to_pil_image(img)) for img in images.float()]).to(device)
         images = torch.stack([transforms(img) for img in images])
         texts = tokenizer(prompts).to(device=device, non_blocking=True)
 
@@ -156,42 +144,23 @@ def pickscore(dtype=torch.float32, device=torch.device('cuda')):
     from hpsv2.src.open_clip import create_model_and_transforms, get_tokenizer
     from hpsv2.src.open_clip.transform import MaskAwareNormalize, ResizeMaxSize
 
-    # processor = AutoProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
-    model = AutoModel.from_pretrained("yuvalkirstain/PickScore_v1", cache_dir="/is/cluster/wliu/.cache/huggingface2/hub/").eval().to(device)
+    model = AutoModel.from_pretrained("yuvalkirstain/PickScore_v1").eval().to(device)
     tokenizer = get_tokenizer('ViT-H-14')
-    # processor.tokenizer.verbose = False
-
-
 
     def _fn(images, prompts, metadata):
         image_size = 224
         transforms = Compose([
-            ResizeMaxSize(image_size, fill=0), # resize to 224x224
+            ResizeMaxSize(image_size, fill=0),
             MaskAwareNormalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711)),
         ])
 
-        # these are not numerically identical, because
-        # F.to_tensor(F.to_pil_image(img)) != img
-        # due to RGB round up (in PIL it is 0~255 integer)
-
-        # images = torch.stack([preprocess_val(F.to_pil_image(img)) for img in images.float()]).to(device)
         images = torch.stack([transforms(img) for img in images])
-        # text_inputs = processor(
-        #     text=prompts,
-        #     padding=True,
-        #     truncation=True,
-        #     max_length=77,
-        #     return_tensors="pt",
-        # ).to(device)
         texts = tokenizer(prompts).to(device=device, non_blocking=True)
-
-
 
         with torch.cuda.amp.autocast(dtype=dtype):
             image_embs = model.get_image_features(images)
             image_embs = image_embs / torch.norm(image_embs, dim=-1, keepdim=True)
-        
-            # text_embs = model.get_text_features(**text_inputs)
+
             text_embs = model.get_text_features(texts)
             text_embs = text_embs / torch.norm(text_embs, dim=-1, keepdim=True)
             pick_score = model.logit_scale.exp() * (image_embs * text_embs).sum(dim=1)
@@ -200,6 +169,3 @@ def pickscore(dtype=torch.float32, device=torch.device('cuda')):
         return pick_score, {}
 
     return _fn
-
-if __name__ == "__main__":
-    from hpsv2.src.open_clip import create_model_and_transforms, get_tokenizer

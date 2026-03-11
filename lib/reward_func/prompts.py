@@ -14,11 +14,19 @@ else:
 ASSETS_PATH = files("lib.assets")
 
 
-@functools.lru_cache() # will remember previous 128 calls
+@functools.lru_cache()
 def _load_lines(path):
     """
-    Load lines from a file. First tries to load from `path` directly, and if that doesn't exist, searches the
-    `alignment/assets` directory for a file named `path`.
+    Load lines from a file with caching for performance.
+
+    First tries to load from `path` directly. If that doesn't exist, searches the
+    `lib.assets` directory for a file named `path`.
+
+    Args:
+        path: Path to the file (relative or absolute)
+
+    Returns:
+        List of stripped lines from the file
     """
     if not os.path.exists(path):
         newpath = ASSETS_PATH.joinpath(path)
@@ -91,19 +99,16 @@ def read_csv(path):
     info = collections.defaultdict(list)
     for row in reader:
         info[row["Category"]].append(row["Prompts"])
-    """
-    [(k, len(v)) for k, v in info.items()]
-    [('Colors', 25), ('Conflicting', 10), ('Counting', 19), ('DALL-E', 20), ('Descriptions', 20), ('Gary Marcus et al. ', 10),
-     ('Misspellings', 10), ('Positional', 20), ('Rare Words', 7), ('Reddit', 38), ('Text', 21)]
-    """
 
+    # Filter out 'Misspellings' and 'Rare Words' categories
+    # Use only prompts [2:] from each category for training (first 2 reserved for eval)
     filtered_info = {}
     for k, v in info.items():
-        if k in ["Misspellings", "Rare Words"]: # filter out, rest 183
+        if k in ["Misspellings", "Rare Words"]:
             continue
-        filtered_info[k] = v[2:] # saved for test
+        filtered_info[k] = v[2:]
     drawbench_prompt_ls = sum(filtered_info.values(), [])
-    return drawbench_prompt_ls  # len=165
+    return drawbench_prompt_ls
 
 def drawbench():
     drawbench_prompt_ls = read_csv(ASSETS_PATH.joinpath("DrawBench Prompts.csv"))
@@ -113,17 +118,26 @@ def drawbench():
 import json
 @functools.lru_cache()
 def read_hpd(style=None):
+    """
+    Load HPDv2 prompts with caching.
+
+    Args:
+        style: Specific style to load ('anime', 'concept-art', 'paintings', 'photo')
+               If None, loads all styles (~800 prompts each)
+
+    Returns:
+        List of prompt strings (first 10 from each style reserved for eval)
+    """
     if style is None:
-        # 800 prompts for each of the 4 styles
         styles = ["anime", "concept-art", "paintings", "photo"]
     else:
         styles = [style,]
-    # dic = {}
+
     prompts_ls = []
     for style in styles:
         with open(ASSETS_PATH.joinpath(f"HPDv2/benchmark_{style}.json"), "r") as f:
-            # dic[style] = json.load(f)  # list of strings
-            prompts_ls.extend(json.load(f)[10:]) # 790 for train, 10 for test
+            # Skip first 10 prompts (reserved for evaluation)
+            prompts_ls.extend(json.load(f)[10:])
 
     return prompts_ls
 
@@ -137,7 +151,7 @@ def hpd_photo():
 
 def hpd_photo_painting():
     prompts_ls = read_hpd("photo")
-    prompts_ls.extend(read_hpd("paintings")) # not "painting"
+    prompts_ls.extend(read_hpd("paintings"))  # Note: style is "paintings", not "painting"
     return random.choice(prompts_ls), {}
 
 def hpd_photo_anime():

@@ -57,7 +57,7 @@ def get_default_configs():
     logging = config.logging = config_dict.ConfigDict()
     logging.use_wandb = True
     logging.save_freq = 5
-    logging.num_checkpoing_limit = 5
+    logging.num_checkpoint_limit = 5
     logging.save_json = True
     logging.wandb_dir = './wandb/'
     logging.wandb_key = 'PLACEHOLDER'

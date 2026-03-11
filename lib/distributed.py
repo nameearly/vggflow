@@ -20,10 +20,19 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 def init_distributed_singlenode(timeout=0):
-    # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+    """
+    Initialize distributed training backend for single-node multi-GPU setup.
+
+    Args:
+        timeout: Timeout in seconds for distributed operations (0 = use default)
+
+    Returns:
+        (local_rank, global_rank, world_size)
+    """
+    # Initializes the distributed backend which will take care of synchronizing nodes/GPUs
     dist_url = "env://"  # default
 
-    # only works with torch.distributed.launch // torch.run
+    # Requires launching with torch.distributed.launch or torchrun
     rank = int(os.environ["RANK"])
     world_size = int(os.environ['WORLD_SIZE'])
     local_rank = int(os.environ['LOCAL_RANK'])
@@ -57,8 +66,6 @@ def get_rank():
 def get_local_rank():
     return int(os.environ.get('LOCAL_RANK', '0'))
 
-
-# ----------------------------------------------------------------------------
 
 def get_world_size():
     return torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1

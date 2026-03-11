@@ -2,16 +2,6 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 
-from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import (
-    StableDiffusionPipeline,
-    rescale_noise_cfg,
-)
-try:
-    from diffusers.utils import randn_tensor
-except ImportError:
-    from diffusers.utils.torch_utils import randn_tensor
-from .inference_step import inference_step
-from ..utils import image_postprocess
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import retrieve_timesteps
 
 
@@ -20,9 +10,14 @@ def latent_to_image(self, latents): # self is a pipeline
         latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
     else:  # AutoencoderTiny
         latents = latents / self.vae.config.scaling_factor
-    # latents is ~ [-3, 3]
-    image = self.vae.decode(latents, return_dict=False)[0] # in [-1, 1]
-    image = torch.clamp((image + 1) / 2, 0., 1.) # [-1, 1] to [0, 1]
+    try:
+        vae_dtype = next(self.vae.parameters()).dtype
+    except StopIteration:
+        vae_dtype = latents.dtype
+    if latents.dtype != vae_dtype:
+        latents = latents.to(dtype=vae_dtype)
+    image = self.vae.decode(latents, return_dict=False)[0]
+    image = torch.clamp((image + 1) / 2, 0., 1.)
     return image
 
 @torch.inference_mode()
@@ -46,7 +41,6 @@ def sample_trajectory(self, tsfm_model_to_use,
         pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
         output_type: Optional[str] = "image",
-        # return_dict: bool = True,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         clip_skip: Optional[int] = None,
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
@@ -96,9 +90,6 @@ def sample_trajectory(self, tsfm_model_to_use,
     device = self._execution_device
 
     with torch.no_grad():
-        lora_scale = (
-            self.joint_attention_kwargs.get("scale", None) if self.joint_attention_kwargs is not None else None
-        )
         (
             prompt_embeds,
             negative_prompt_embeds,
@@ -117,10 +108,9 @@ def sample_trajectory(self, tsfm_model_to_use,
             pooled_prompt_embeds=pooled_prompt_embeds,
             negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
             device=device,
-            clip_skip=self.clip_skip, # which is be self._clip_skip
+            clip_skip=self.clip_skip,
             num_images_per_prompt=num_images_per_prompt,
             max_sequence_length=max_sequence_length,
-            # lora_scale=lora_scale, # old version does not have this input
         )
 
         if self.do_classifier_free_guidance:
@@ -128,25 +118,11 @@ def sample_trajectory(self, tsfm_model_to_use,
             pooled_prompt_embeds_comb = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
 
     # 4. Prepare timesteps
-    """
-    retrieve_timesteps:
-    scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
-    timesteps = scheduler.timesteps
-    
-    timesteps = tensor([1000.0000, 987.3806, 974.1077, 960.1293, 945.3875, 929.8179,
-            913.3490, 895.9003, 877.3819, 857.6923, 836.7167, 814.3248,
-            790.3683, 764.6771, 737.0558, 707.2785, 675.0823, 640.1602,
-            602.1506, 560.6250, 515.0721, 464.8760, 409.2888, 347.3926,
-            278.0488, 199.8270, 110.9057, 8.9286], device='cuda:0')
-    sigmas = concat(timesteps / 1000., "0.")
-    """
-
     timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
-    num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0) # 0
+    num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
     self._num_timesteps = len(timesteps)
 
     # 5. Prepare latent variables
-    # num_channels_latents = self.transformer.config.in_channels
     num_channels_latents = tsfm_model_to_use.config.in_channels
     latents = self.prepare_latents(
         batch_size * num_images_per_prompt,
@@ -170,9 +146,7 @@ def sample_trajectory(self, tsfm_model_to_use,
             # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
             timestep = t.expand(latent_model_input.shape[0])
 
-            # the model output should actually be velocity
             with torch.inference_mode():
-                # noise_pred = self.transformer(
                 noise_pred = tsfm_model_to_use(
                     hidden_states=latent_model_input,
                     timestep=timestep,
@@ -182,22 +156,11 @@ def sample_trajectory(self, tsfm_model_to_use,
                     return_dict=False,
                 )[0]
 
-                # perform cfg
-                if self.do_classifier_free_guidance: # if self._guidance_scale > 1
+                if self.do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
 
-            # compute the previous noisy sample x_t -> x_t-1
-            """ what happens in scheduler.step():
-            sigma = self.sigmas[self.step_index]
-            sigma_next = self.sigmas[self.step_index + 1]
-            prev_sample = sample + (sigma_next - sigma) * model_output
-            -- In SD3, model output is negative velocity
-            
-            latent_model_input[:1] + (self.scheduler.sigmas[1] - self.scheduler.sigmas[0]) * noise_pred # == latents
-            self.scheduler.sigmas[1] - self.scheduler.sigmas[0] is negative value
-            """
             latents_dtype = latents.dtype
             latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
             all_latents.append(latents)
@@ -208,7 +171,6 @@ def sample_trajectory(self, tsfm_model_to_use,
                 if torch.backends.mps.is_available():
                     latents = latents.to(latents_dtype)
 
-            # call the callback, if provided
             if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                 progress_bar.update()
 
@@ -217,15 +179,12 @@ def sample_trajectory(self, tsfm_model_to_use,
     else:
         image = latent_to_image(self, latents).detach()
         if output_type == "pil":
-            # tensor to list of PIL; do_denormalize is True by default
             image = self.image_processor.postprocess(image,
                 output_type=output_type, do_denormalize=[False for _ in image])
 
-    # Offload all models
     self.maybe_free_model_hooks()
 
     if return_output:
         return (image, all_latents, timesteps, prompt_embeds, pooled_prompt_embeds, negative_prompt_embeds, negative_pooled_prompt_embeds, all_outputs)
     else:
-        # if not return_dict:
         return (image, all_latents, timesteps, prompt_embeds, pooled_prompt_embeds, negative_prompt_embeds, negative_pooled_prompt_embeds, None)

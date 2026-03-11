@@ -1,4 +1,4 @@
-torchrun --standalone --nproc_per_node=2 train_vggflow.py \
+torchrun --standalone --nproc_per_node=2 train_vggflow_refactored.py \
   --config=config/aesthetic.py \
   --seed=1 \
   --config.model.reward_scale=1e4 \
